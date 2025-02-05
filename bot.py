@@ -1,0 +1,579 @@
+import sys
+import subprocess
+
+def install_required_packages():
+    required_packages = ['aiohttp', 'aiohttp_socks', 'colorama', 'fake_useragent', 'pytz']
+    
+    for package in required_packages:
+        try:
+            __import__(package)
+            print(f"✅ {package} already installed")
+        except ImportError:
+            try:
+                # Mencoba instalasi normal terlebih dahulu
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"✨ {package} installed successfully!")
+            except subprocess.CalledProcessError:
+                print(f"⚠️ Normal installation failed. Trying with --break-system-packages...")
+                try:
+                    # Jika gagal, coba dengan --break-system-packages
+                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', package, '--break-system-packages'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"✨ {package} installed successfully with --break-system-packages!")
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Error installing {package}: {e}")
+                    sys.exit(1)
+
+install_required_packages()
+
+from aiohttp import (
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout
+)
+from aiohttp_socks import ProxyConnector
+from colorama import *
+from datetime import datetime
+from fake_useragent import FakeUserAgent
+import asyncio, json, os, pytz, uuid
+
+init(autoreset=True)
+
+wib = pytz.timezone('Asia/Jakarta')
+
+class Dawn:
+    def __init__(self) -> None:
+        self.headers = {
+            "Accept": "*/*",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
+            "Host": "www.aeropres.in",
+            "Origin": "chrome-extension://fpdkjdnhkakefebpekbdhillbhonfjjp",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
+            "User-Agent": FakeUserAgent().random
+        }
+        self.extension_id = "fpdkjdnhkakefebpekbdhillbhonfjjp"
+        self.proxies = []
+        self.proxy_index = 0
+        
+        self.telegram_config = self.load_telegram_config()
+        self.use_telegram = self.telegram_config.get('enabled', False) if self.telegram_config else False
+        if self.use_telegram and not all(key in self.telegram_config for key in ['bot_token', 'chat_id']):
+            raise ValueError("Telegram config incomplete")
+
+    def load_telegram_config(self):
+        try:
+            if not os.path.exists('config.json'):
+                self.log(f"{Fore.RED}File 'config.json' not found.{Style.RESET_ALL}")
+                return None
+
+            with open('config.json', 'r') as file:
+                config = json.load(file)
+                return config
+        except json.JSONDecodeError:
+            return None
+
+    async def send_telegram_message(self, message):
+        if not self.use_telegram:
+            return
+        
+        url = f"https://api.telegram.org/bot{self.telegram_config['bot_token']}/sendMessage"
+        data = {
+            "chat_id": self.telegram_config['chat_id'],
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        
+        try:
+            async with ClientSession() as session:
+                async with session.post(url, json=data) as response:
+                    response.raise_for_status()
+        except Exception as e:
+            self.log(f"{Fore.RED}Failed to send Telegram message: {e}{Style.RESET_ALL}")
+
+    def clear_terminal(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    def log(self, message):
+        print(
+            f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+            f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}{message}",
+            flush=True
+        )
+
+    def welcome(self):
+        print(
+            f"""
+        {Fore.GREEN + Style.BRIGHT}Auto Ping {Fore.BLUE + Style.BRIGHT}Dawn - BOT
+            """
+            f"""
+        {Fore.GREEN + Style.BRIGHT}Rey? {Fore.YELLOW + Style.BRIGHT}<INI WATERMARK>
+            """
+            f"""
+        {Fore.WHITE + Style.DIM}Recoder: @sankarov @UmarAlAtsary
+            """
+        )
+
+    def format_seconds(self, seconds):
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+    
+    async def load_auto_proxies(self):
+        url = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt"
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=20)) as session:
+                async with session.get(url=url) as response:
+                    response.raise_for_status()
+                    content = await response.text()
+                    with open('proxy.txt', 'w') as f:
+                        f.write(content)
+
+                    self.proxies = content.splitlines()
+                    if not self.proxies:
+                        self.log(f"{Fore.RED + Style.BRIGHT}No proxies found in the downloaded list!{Style.RESET_ALL}")
+                        return
+                    
+                    self.log(f"{Fore.GREEN + Style.BRIGHT}Proxies successfully downloaded.{Style.RESET_ALL}")
+                    self.log(f"{Fore.YELLOW + Style.BRIGHT}Loaded {len(self.proxies)} proxies.{Style.RESET_ALL}")
+                    self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"*75)
+                    await asyncio.sleep(3)
+        except Exception as e:
+            self.log(f"{Fore.RED + Style.BRIGHT}Failed to load proxies: {e}{Style.RESET_ALL}")
+            return []
+        
+    async def load_manual_proxy(self):
+        try:
+            if not os.path.exists('manual_proxy.txt'):
+                print(f"{Fore.RED + Style.BRIGHT}Proxy file 'manual_proxy.txt' not found!{Style.RESET_ALL}")
+                return
+
+            with open('manual_proxy.txt', "r") as f:
+                proxies = f.read().splitlines()
+
+            self.proxies = proxies
+            self.log(f"{Fore.YELLOW + Style.BRIGHT}Loaded {len(self.proxies)} proxies.{Style.RESET_ALL}")
+            self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"*75)
+            await asyncio.sleep(3)
+        except Exception as e:
+            print(f"{Fore.RED + Style.BRIGHT}Failed to load manual proxies: {e}{Style.RESET_ALL}")
+            self.proxies = []
+
+    def check_proxy_schemes(self, proxies):
+        schemes = ["http://", "https://", "socks4://", "socks5://"]
+        if any(proxies.startswith(scheme) for scheme in schemes):
+            return proxies
+        
+        return f"http://{proxies}" # Change with yours proxy schemes if your proxy not have schemes [http:// or socks5://]
+
+    def get_next_proxy(self):
+        if not self.proxies:
+            self.log(f"{Fore.RED + Style.BRIGHT}No proxies available!{Style.RESET_ALL}")
+            return None
+
+        proxy = self.proxies[self.proxy_index]
+        self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
+        return self.check_proxy_schemes(proxy)
+
+    def load_accounts(self):
+        try:
+            if not os.path.exists('accounts.json'):
+                self.log(f"{Fore.RED}File 'accounts.json' tidak ditemukan.{Style.RESET_ALL}")
+                return
+
+            with open('accounts.json', 'r') as file:
+                data = json.load(file)
+                if isinstance(data, list):
+                    return data
+                return []
+        except json.JSONDecodeError:
+            return []
+            
+    def generate_app_id(self):
+        return uuid.uuid4().hex
+    
+    def hide_email(self, email):
+        local, domain = email.split('@', 1)
+        hide_local = local[:3] + '*' * 3 + local[-3:]
+        return f"{hide_local}@{domain}"
+    
+    def hide_token(self, token):
+        hide_token = token[:3] + '*' * 3 + token[-3:]
+        return hide_token
+        
+    async def user_data(self, app_id: str, email: str, token: str, proxy=None, retries=3):
+        url = f"https://www.aeropres.in/api/atom/v1/userreferral/getpoint?appid={app_id}"
+        headers = {
+            **self.headers,
+            "Authorization": f"Berear {token}",
+            "Content-Type": "application/json",
+        }
+        for attempt in range(retries):
+            connector = ProxyConnector.from_url(proxy) if proxy else None
+            try:
+                async with ClientSession(connector=connector, timeout=ClientTimeout(total=20)) as session:
+                    async with session.get(url=url, headers=headers) as response:
+                        if response.status == 400:
+                            self.log(
+                                f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                                f"{Fore.WHITE + Style.BRIGHT} {self.hide_email(email)} {Style.RESET_ALL}"
+                                f"{Fore.RED + Style.BRIGHT}Token Is Expired{Style.RESET_ALL}"
+                                f"{Fore.MAGENTA + Style.BRIGHT} ]{Style.RESET_ALL}"
+                            )
+                            return
+                        
+                        response.raise_for_status()
+                        result = await response.json()
+                        return result['data']
+            except (Exception, ClientResponseError) as e:
+                if attempt < retries - 1:
+                    print(
+                        f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {self.hide_email(email)} {Style.RESET_ALL}"
+                        f"{Fore.RED + Style.BRIGHT}Login Failed{Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT} - {Style.RESET_ALL}"
+                        f"{Fore.YELLOW + Style.BRIGHT}Retrying...{Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT} ]{Style.RESET_ALL}",
+                        end="\r",
+                        flush=True
+                    )
+                    await asyncio.sleep(2)
+                else:
+                    return None
+        
+    async def send_keepalive(self, app_id: str, email: str, token: str, proxy=None, retries=60):
+        url = f"https://www.aeropres.in/chromeapi/dawn/v1/userreward/keepalive?appid={app_id}"
+        data = json.dumps({"username":email, "extensionid":self.extension_id, "numberoftabs":0, "_v":"1.1.1"})
+        headers = {
+            **self.headers,
+            "Authorization": f"Berear {token}",
+            "Content-Length": str(len(data)),
+            "Content-Type": "application/json",
+        }
+        for attempt in range(retries):
+            connector = ProxyConnector.from_url(proxy) if proxy else None
+            try:
+                async with ClientSession(connector=connector, timeout=ClientTimeout(total=10)) as session:
+                    async with session.post(url=url, headers=headers, data=data) as response:
+                        response.raise_for_status()
+                        return await response.json()
+            except (Exception, ClientResponseError) as e:
+                if attempt < retries - 1:
+                    continue
+                return None
+            
+    async def question(self):
+        while True:
+            try:
+                print("1. Run With Auto Proxy")
+                print("2. Run With Manual Proxy")
+                print("3. Run Without Proxy")
+                choose = int(input("Choose [1/2/3] -> ").strip())
+
+                if choose in [1, 2, 3]:
+                    proxy_type = (
+                        "With Auto Proxy" if choose == 1 else 
+                        "With Manual Proxy" if choose == 2 else 
+                        "Without Proxy"
+                    )
+                    print(f"{Fore.GREEN + Style.BRIGHT}Run {proxy_type} Selected.{Style.RESET_ALL}")
+                    await asyncio.sleep(1)
+                    return choose
+                else:
+                    print(f"{Fore.RED + Style.BRIGHT}Please enter either 1, 2 or 3.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1, 2 or 3).{Style.RESET_ALL}")
+        
+    async def process_accounts(self, app_id: str, email: str, token: str, use_proxy: bool):
+        ping_count = 1
+        successful_pings = 0
+        hide_email = self.hide_email(email)
+        proxy = None
+        last_total_points = 0
+    
+        if not use_proxy:
+            user = await self.user_data(app_id, email, token)
+            if not user:
+                self.log(
+                    f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                    f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                    f"{Fore.RED + Style.BRIGHT}Login Failed{Style.RESET_ALL}"
+                    f"{Fore.WHITE + Style.BRIGHT} With Proxy {proxy} {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                )
+            
+            last_total_points = await self.update_points(user, hide_email)
+            if self.use_telegram:
+                telegram_message = (
+                    f"✅ <b>Login Success</b>\n"
+                    f"📧 Email: {hide_email}\n"
+                    f"💰 Initial Balance: {last_total_points:.0f} Points\n"
+                    f"🌐 Proxy: {proxy}\n"
+                    f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                )
+                await self.send_telegram_message(telegram_message)
+            await asyncio.sleep(1)
+    
+            print(
+                f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                f"{Fore.BLUE + Style.BRIGHT}Try to Sent Ping,{Style.RESET_ALL}"
+                f"{Fore.YELLOW + Style.BRIGHT} Wait... {Style.RESET_ALL}",
+                end="\r",
+                flush=True
+            )
+            await asyncio.sleep(1)
+    
+            while True:
+                keepalive = await self.send_keepalive(app_id, email, token)
+                if keepalive:
+                    successful_pings += 1
+                    self.log(
+                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}-{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} Ping {ping_count} With Proxy {proxy} {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}] [ Status{Style.RESET_ALL}"
+                        f"{Fore.GREEN + Style.BRIGHT} Keep Alive Recorded {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                    )
+                    
+                    if successful_pings % 2 == 0:  # Every 2 successful pings
+                        user = await self.user_data(app_id, email, token)
+                        if user:
+                            current_points = await self.update_points(user, hide_email)
+                            if self.use_telegram and current_points != last_total_points:
+                                telegram_message = (
+                                    f"💰 <b>Points Updated</b>\n"
+                                    f"📧 Email: {hide_email}\n"
+                                    f"📊 Previous Balance: {last_total_points:.0f} Points\n"
+                                    f"💵 Current Balance: {current_points:.0f} Points\n"
+                                    f"📈 Difference: {(current_points - last_total_points):.0f} Points\n"
+                                    f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                                )
+                                await self.send_telegram_message(telegram_message)
+                            last_total_points = current_points
+                    
+                    ping_count += 1
+                else:
+                    self.log(
+                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}-{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} Ping {ping_count} With Proxy {proxy} {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}] [ Status{Style.RESET_ALL}"
+                        f"{Fore.YELLOW + Style.BRIGHT} Keep Alive Not Recorded {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                    )
+                    if self.use_telegram:
+                        telegram_message = (
+                            f"⚠️ <b>Ping Failure</b>\n"
+                            f"📧 Email: {hide_email}\n"
+                            f"❌ Keep Alive Not Recorded\n"
+                            f"💰 Balance: {last_total_points:.0f} Points\n"
+                            f"🌐 Proxy: {proxy}\n"
+                            f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                        )
+                        await self.send_telegram_message(telegram_message)
+    
+                print(
+                    f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                    f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                    f"{Fore.BLUE + Style.BRIGHT}Next Ping in 3 Minutes.{Style.RESET_ALL}"
+                    f"{Fore.YELLOW + Style.BRIGHT} Wait... {Style.RESET_ALL}",
+                    end="\r",
+                    flush=True
+                )
+                await asyncio.sleep(180)
+    
+        else:
+            user = None
+            proxy = self.get_next_proxy()
+            
+            while user is None:
+                user = await self.user_data(app_id, email, token, proxy)
+                if not user:
+                    self.log(
+                        f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                        f"{Fore.RED + Style.BRIGHT}Login Failed{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} With Proxy {proxy} {Style.RESET_ALL}"
+                        f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                    )
+                    await asyncio.sleep(1)
+                
+                    print(
+                        f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                        f"{Fore.BLUE + Style.BRIGHT}Try With The Next Proxy,{Style.RESET_ALL}"
+                        f"{Fore.YELLOW + Style.BRIGHT} Wait... {Style.RESET_ALL}",
+                        end="\r",
+                        flush=True
+                    )
+                    
+                    proxy = self.get_next_proxy()
+                    continue
+    
+                # Calculate initial points and send first login notification
+                last_total_points = await self.update_points(user, hide_email)
+                if self.use_telegram:
+                    telegram_message = (
+                        f"✅ <b>Login Success</b>\n"
+                        f"📧 Email: {hide_email}\n"
+                        f"💰 Initial Balance: {last_total_points:.0f} Points\n"
+                        f"🌐 Proxy: {proxy}\n"
+                        f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                    )
+                    await self.send_telegram_message(telegram_message)
+                await asyncio.sleep(1)
+    
+                print(
+                    f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                    f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                    f"{Fore.BLUE + Style.BRIGHT}Try to Sent Ping,{Style.RESET_ALL}"
+                    f"{Fore.YELLOW + Style.BRIGHT} Wait... {Style.RESET_ALL}",
+                    end="\r",
+                    flush=True
+                )
+                await asyncio.sleep(1)
+    
+                while True:
+                    keepalive = await self.send_keepalive(app_id, email, token, proxy)
+                    if keepalive:
+                        successful_pings += 1
+                        self.log(
+                            f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                            f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}-{Style.RESET_ALL}"
+                            f"{Fore.WHITE + Style.BRIGHT} Ping {ping_count} With Proxy {proxy} {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}] [ Status{Style.RESET_ALL}"
+                            f"{Fore.GREEN + Style.BRIGHT} Keep Alive Recorded {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                        )
+    
+                        if successful_pings % 2 == 0:  # Every 2 successful pings
+                            user = await self.user_data(app_id, email, token, proxy)
+                            if user:
+                                current_points = await self.update_points(user, hide_email)
+                                if self.use_telegram and current_points != last_total_points:
+                                    telegram_message = (
+                                        f"💰 <b>Points Updated</b>\n"
+                                        f"📧 Email: {hide_email}\n"
+                                        f"📊 Previous Balance: {last_total_points:.0f} Points\n"
+                                        f"💵 Current Balance: {current_points:.0f} Points\n"
+                                        f"📈 Difference: {(current_points - last_total_points):.0f} Points\n"
+                                        f"🌐 Proxy: {proxy}\n"
+                                        f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                                    )
+                                    await self.send_telegram_message(telegram_message)
+                                last_total_points = current_points
+    
+                        ping_count += 1
+                    else:
+                        self.log(
+                            f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+                            f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}-{Style.RESET_ALL}"
+                            f"{Fore.WHITE + Style.BRIGHT} Ping {ping_count} With Proxy {proxy} {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}] [ Status{Style.RESET_ALL}"
+                            f"{Fore.YELLOW + Style.BRIGHT} Keep Alive Not Recorded {Style.RESET_ALL}"
+                            f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+                        )
+                        if self.use_telegram:
+                            telegram_message = (
+                                f"⚠️ <b>Ping Failure</b>\n"
+                                f"📧 Email: {hide_email}\n"
+                                f"❌ Keep Alive Not Recorded\n"
+                                f"💰 Balance: {last_total_points:.0f} Points\n"
+                                f"🌐 Proxy: {proxy}\n"
+                                f"⏰ Time: {datetime.now().astimezone(wib).strftime('%x %X %Z')}"
+                            )
+                            await self.send_telegram_message(telegram_message)
+                        proxy = self.get_next_proxy()
+    
+                    print(
+                        f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+                        f"{Fore.BLUE + Style.BRIGHT}Next Ping in 3 Minutes.{Style.RESET_ALL}"
+                        f"{Fore.YELLOW + Style.BRIGHT} Wait... {Style.RESET_ALL}",
+                        end="\r",
+                        flush=True
+                    )
+                    await asyncio.sleep(180)
+                
+    async def update_points(self, user_data, hide_email):
+        referral_point = user_data.get("referralPoint", {})
+        reward_point = user_data.get("rewardPoint", {})
+
+        commission_value = referral_point.get("commission", 0)
+        total_reward_points = sum(
+            value for key, value in reward_point.items()
+            if "points" in key.lower() and isinstance(value, (int, float))
+        )
+
+        total_points = commission_value + total_reward_points
+        self.log(
+            f"{Fore.MAGENTA + Style.BRIGHT}[ Account{Style.RESET_ALL}"
+            f"{Fore.WHITE + Style.BRIGHT} {hide_email} {Style.RESET_ALL}"
+            f"{Fore.GREEN + Style.BRIGHT}Points Updated{Style.RESET_ALL}"
+            f"{Fore.MAGENTA + Style.BRIGHT} ] [ Balance{Style.RESET_ALL}"
+            f"{Fore.WHITE + Style.BRIGHT} {total_points:.0f} Points {Style.RESET_ALL}"
+            f"{Fore.MAGENTA + Style.BRIGHT}]{Style.RESET_ALL}"
+        )
+        return total_points
+            
+    async def main(self):
+        try:
+            accounts = self.load_accounts()
+            if not accounts:
+                self.log(f"{Fore.RED}No accounts loaded from 'accounts.json'.{Style.RESET_ALL}")
+                return
+            
+            use_proxy_choice = await self.question()
+
+            use_proxy = False
+            if use_proxy_choice in [1, 2]:
+                use_proxy = True
+
+            self.clear_terminal()
+            self.welcome()
+            self.log(
+                f"{Fore.GREEN + Style.BRIGHT}Account's Total: {Style.RESET_ALL}"
+                f"{Fore.WHITE + Style.BRIGHT}{len(accounts)}{Style.RESET_ALL}"
+            )
+            self.log(f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"*75)
+
+            if use_proxy and use_proxy_choice == 1:
+                await self.load_auto_proxies()
+            elif use_proxy and use_proxy_choice == 2:
+                await self.load_manual_proxy()
+
+            while True:
+                tasks = []
+                for account in accounts:
+                    app_id = self.generate_app_id()
+                    email = account['Email']
+                    token = account['Token']
+
+                    if app_id and email and token:
+                        tasks.append(self.process_accounts(app_id, email, token, use_proxy))
+
+                await asyncio.gather(*tasks)
+                await asyncio.sleep(3)
+
+        except Exception as e:
+            self.log(f"{Fore.RED+Style.BRIGHT}Error: {e}{Style.RESET_ALL}")
+
+if __name__ == "__main__":
+    try:
+        bot = Dawn()
+        asyncio.run(bot.main())
+    except KeyboardInterrupt:
+        print(
+            f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
+            f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
+            f"{Fore.RED + Style.BRIGHT}[ EXIT ] Dawn - BOT{Style.RESET_ALL}",                                       
+        )
